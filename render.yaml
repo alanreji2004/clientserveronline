@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: ide-backend
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    plan: starter
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: EXECUTION_MODE
+        value: "local"
+
+  - type: web
+    name: ide-frontend
+    runtime: docker
+    dockerfilePath: frontend/Dockerfile
+    dockerContext: frontend
+    plan: starter
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: ide-backend
+          type: web
+          property: host
+
