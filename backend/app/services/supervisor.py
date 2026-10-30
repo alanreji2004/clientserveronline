@@ -23,7 +23,8 @@ class ManagedProcess:
         cwd: Path,
         env: Dict[str, str],
         on_event: Optional[Callable[[Dict[str, Any]], Any]] = None,
-        timeout_seconds: int = 180
+        timeout_seconds: int = 180,
+        run_id: Optional[str] = None
     ):
         self.process_id = process_id
         self.session_id = session_id
@@ -33,6 +34,7 @@ class ManagedProcess:
         self.env = env
         self.on_event = on_event
         self.timeout_seconds = timeout_seconds
+        self.run_id = run_id
 
         self.pid: Optional[int] = None
         self.status: str = "starting"
@@ -64,7 +66,8 @@ class ManagedProcess:
             started_at=self.started_at,
             ended_at=self.ended_at,
             runtime_seconds=round(runtime, 2),
-            output_line_count=len(self.output_history)
+            output_line_count=len(self.output_history),
+            run_id=self.run_id
         )
 
     def _append_output(self, stream: str, text: str):
@@ -74,7 +77,8 @@ class ManagedProcess:
             "session_id": self.session_id,
             "stream": stream,
             "data": text,
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "run_id": self.run_id
         }
         self.output_history.append(event)
         if len(self.output_history) > settings.MAX_OUTPUT_BUFFER_LINES:
@@ -89,12 +93,17 @@ class ManagedProcess:
                 pass
 
     async def _stream_reader(self, stream: asyncio.StreamReader, stream_name: str):
+        """
+        Reads from process stdout/stderr stream in chunks without line-buffering.
+        This ensures interactive prompts (e.g. `input('Enter name: ')` or `printf('Enter: ')`
+        which do not end in newline) are emitted immediately to the terminal.
+        """
         try:
             while not stream.at_eof():
-                line_bytes = await stream.readline()
-                if not line_bytes:
+                chunk_bytes = await stream.read(4096)
+                if not chunk_bytes:
                     break
-                text = line_bytes.decode("utf-8", errors="replace")
+                text = chunk_bytes.decode("utf-8", errors="replace")
                 self._append_output(stream_name, text)
         except asyncio.CancelledError:
             pass
@@ -112,16 +121,16 @@ class ManagedProcess:
 
     async def start(self):
         try:
-            # Platform specific subprocess setup
             is_win = sys.platform == "win32"
             creationflags = 0
             if is_win:
                 creationflags = 0x00000200  # CREATE_NEW_PROCESS_GROUP
-
-            # Inject unbuffered python env
+            
             env = os.environ.copy()
             env.update(self.env)
+            # Guarantee unbuffered Python stdout/stderr
             env["PYTHONUNBUFFERED"] = "1"
+            env["PYTHONIOENCODING"] = "utf-8"
 
             self.proc = await asyncio.create_subprocess_exec(
                 *self.command,
@@ -136,19 +145,18 @@ class ManagedProcess:
 
             self.pid = self.proc.pid
             self.status = "running"
-
             self._append_output("system", f"[*] Process '{self.name}' started (PID: {self.pid})\n")
             self._append_output("system", f"[*] Command: {' '.join(self.command)}\n\n")
 
-            # Spawn stream readers
+            # Launch concurrent streaming readers for stdout and stderr
             t_out = asyncio.create_task(self._stream_reader(self.proc.stdout, "stdout"))
             t_err = asyncio.create_task(self._stream_reader(self.proc.stderr, "stderr"))
             self._reader_tasks = [t_out, t_err]
 
-            # Start timeout guard
+            # Timeout guard
             self._timeout_task = asyncio.create_task(self._timeout_guard())
 
-            # Spawn monitor task to wait for exit
+            # Background exit monitor
             asyncio.create_task(self._wait_for_exit())
 
         except Exception as e:
@@ -169,6 +177,13 @@ class ManagedProcess:
         if self._timeout_task and not self._timeout_task.done():
             self._timeout_task.cancel()
 
+        # Drain any residual reader tasks with a short timeout
+        if self._reader_tasks:
+            try:
+                await asyncio.wait_for(asyncio.gather(*self._reader_tasks, return_exceptions=True), timeout=1.0)
+            except Exception:
+                pass
+
         if self._stopped_by_user:
             self.status = "stopped"
         elif returncode == 0:
@@ -183,6 +198,9 @@ class ManagedProcess:
         runtime = 0.0
         if self.ended_at:
             runtime = (self.ended_at - self.started_at).total_seconds()
+        elif self.status == "running":
+            runtime = (datetime.now(timezone.utc) - self.started_at).total_seconds()
+
         event = {
             "type": "status_change",
             "process_id": self.process_id,
@@ -190,7 +208,8 @@ class ManagedProcess:
             "name": self.name,
             "status": self.status,
             "exit_code": self.exit_code,
-            "runtime_seconds": round(runtime, 2)
+            "runtime_seconds": round(runtime, 2),
+            "run_id": self.run_id
         }
         if self.on_event:
             try:
@@ -219,23 +238,32 @@ class ManagedProcess:
         self._stopped_by_user = True
         try:
             if sys.platform == "win32":
-                # Kill process tree cleanly using taskkill or psutil
+                # Kill process tree cleanly using psutil or taskkill
                 try:
                     p = psutil.Process(self.pid)
                     for child in p.children(recursive=True):
-                        child.kill()
+                        try:
+                            child.kill()
+                        except Exception:
+                            pass
                     p.kill()
                 except Exception:
-                    # Fallback to os taskkill
                     os.system(f"taskkill /F /T /PID {self.pid} >nul 2>&1")
             else:
                 try:
                     os.killpg(os.getpgid(self.pid), signal.SIGTERM)
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.3)
                     if self.proc.returncode is None:
                         os.killpg(os.getpgid(self.pid), signal.SIGKILL)
                 except Exception:
                     self.proc.kill()
+            
+            # Confirm exit within bounded timeout
+            try:
+                await asyncio.wait_for(self.proc.wait(), timeout=2.0)
+            except Exception:
+                pass
+
         except Exception as e:
             self._append_output("system", f"[Warning: Process termination issue: {e}]\n")
 
@@ -243,12 +271,14 @@ class ManagedProcess:
         self.ended_at = datetime.now(timezone.utc)
         self._broadcast_status_change()
 
+
 class ProcessSupervisor:
     def __init__(self):
         # session_id -> { process_id -> ManagedProcess }
         self.sessions: Dict[str, Dict[str, ManagedProcess]] = {}
         # session_id -> list of callbacks
         self.listeners: Dict[str, List[Callable[[Dict[str, Any]], Any]]] = {}
+        self._lifecycle_lock = asyncio.Lock()
 
     def register_listener(self, session_id: str, callback: Callable[[Dict[str, Any]], Any]):
         if session_id not in self.listeners:
@@ -333,7 +363,8 @@ class ProcessSupervisor:
             cwd=workspace_dir,
             env=req.env_vars or {},
             on_event=on_event,
-            timeout_seconds=settings.DEFAULT_TIMEOUT_SECONDS
+            timeout_seconds=settings.DEFAULT_TIMEOUT_SECONDS,
+            run_id=req.run_id
         )
 
         self.sessions[session_id][process_id] = proc
@@ -355,14 +386,51 @@ class ProcessSupervisor:
         await proc.stop()
         return proc.to_info()
 
-    async def stop_all_session_processes(self, session_id: str):
-        if session_id in self.sessions:
-            for proc in self.sessions[session_id].values():
+    async def delete_process(self, session_id: str, process_id: str):
+        """
+        Safely stops the process if still running, terminates child processes,
+        releases resources, and deletes the terminal from session tracking.
+        """
+        if session_id in self.sessions and process_id in self.sessions[session_id]:
+            proc = self.sessions[session_id][process_id]
+            if proc.status in ("starting", "running"):
                 await proc.stop()
+            del self.sessions[session_id][process_id]
+            await self.broadcast_to_session(session_id, {
+                "type": "process_deleted",
+                "process_id": process_id,
+                "session_id": session_id,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+
+    async def stop_all_session_processes(self, session_id: str):
+        """Stops all processes inside a single session."""
+        if session_id in self.sessions:
+            procs = list(self.sessions[session_id].values())
+            running = [p for p in procs if p.status in ("starting", "running")]
+            if running:
+                await asyncio.gather(*[p.stop() for p in running], return_exceptions=True)
+
+    async def stop_all_active_execution(self) -> int:
+        """
+        Centralized execution lifecycle manager:
+        Finds and stops all active processes across ALL sessions in the execution scope.
+        Serialized by a lifecycle lock to prevent concurrent Run request races.
+        Returns total count of processes stopped.
+        """
+        async with self._lifecycle_lock:
+            active_procs: List[ManagedProcess] = []
+            for s_id, procs in list(self.sessions.items()):
+                for p in list(procs.values()):
+                    if p.status in ("starting", "running"):
+                        active_procs.append(p)
+            
+            if active_procs:
+                await asyncio.gather(*[p.stop() for p in active_procs], return_exceptions=True)
+            return len(active_procs)
 
     def get_history(self, session_id: str, process_id: str) -> List[Dict[str, Any]]:
         proc = self.get_process(session_id, process_id)
         return proc.output_history
 
 supervisor = ProcessSupervisor()
-

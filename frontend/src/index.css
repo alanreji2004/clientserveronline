@@ -145,3 +145,36 @@ input, select, textarea {
   color: #fde68a;
   border-color: #92400e;
 }
+
+/* Responsive Utilities & Breakpoints */
+.hide-on-desktop {
+  display: none !important;
+}
+
+@media (max-width: 768px) {
+  .hide-on-mobile {
+    display: none !important;
+  }
+  .hide-on-desktop {
+    display: flex !important;
+  }
+  .terminal-split-container {
+    flex-direction: column !important;
+  }
+  .terminal-split-container > div {
+    border-right: none !important;
+    border-bottom: 1px solid var(--terminal-border) !important;
+    min-height: 200px;
+  }
+  /* Touch target optimizations for mobile */
+  .mobile-touch-btn {
+    min-height: 38px;
+    padding: 6px 12px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .hide-on-small {
+    display: none !important;
+  }
+}

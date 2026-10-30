@@ -93,6 +93,15 @@ export class ExecutionWebSocket {
     }
   }
 
+  deleteProcess(processId: string) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        action: 'delete_process',
+        process_id: processId,
+      }));
+    }
+  }
+
   disconnect() {
     this.shouldReconnect = false;
     if (this.reconnectTimer) {

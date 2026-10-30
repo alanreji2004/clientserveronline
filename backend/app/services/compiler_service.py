@@ -41,6 +41,9 @@ class CompilerService:
             else:
                 severity = "note"
 
+            if ".ide_unbuf" in rel:
+                continue
+
             diagnostics.append(Diagnostic(
                 file=rel,
                 line=int(match.group("line")),
@@ -74,6 +77,21 @@ class CompilerService:
 
         out_path = workspace_dir / binary_filename
 
+        # Write unbuffering runtime constructor helper into workspace to eliminate pipe block-buffering
+        unbuf_c = workspace_dir / ".ide_unbuf.c"
+        try:
+            with open(unbuf_c, "w", encoding="utf-8") as f:
+                f.write(
+                    "#include <stdio.h>\n"
+                    "__attribute__((constructor))\n"
+                    "static void __ide_init_unbuf(void) {\n"
+                    "    setvbuf(stdout, NULL, _IONBF, 0);\n"
+                    "    setvbuf(stderr, NULL, _IONBF, 0);\n"
+                    "}\n"
+                )
+        except Exception:
+            pass
+
         # 3. Assemble compiler command
         cmd = ["gcc"]
         
@@ -85,6 +103,8 @@ class CompilerService:
             
         cmd.extend(flags)
         cmd.extend(safe_sources)
+        if unbuf_c.exists():
+            cmd.append(".ide_unbuf.c")
         cmd.extend(["-o", binary_filename])
 
         # If on Windows, link ws2_32 for sockets

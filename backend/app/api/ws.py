@@ -47,6 +47,11 @@ async def websocket_stream_endpoint(websocket: WebSocket, session_id: str):
                     if pid:
                         await supervisor.stop_process(session_id, pid)
 
+                elif action == "delete_process":
+                    pid = msg.get("process_id")
+                    if pid:
+                        await supervisor.delete_process(session_id, pid)
+
                 elif action == "ping":
                     await websocket.send_json({"type": "pong"})
 

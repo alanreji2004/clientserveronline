@@ -4,9 +4,10 @@ from pydantic import BaseModel
 class WSOutputMessage(BaseModel):
     type: Literal["output"] = "output"
     process_id: str
-    stream: Literal["stdout", "stderr", "system"]
+    stream: Literal["stdout", "stderr", "system", "stdin"]
     data: str
     timestamp: str
+    run_id: Optional[str] = None
 
 class WSStatusMessage(BaseModel):
     type: Literal["status_change"] = "status_change"
@@ -14,6 +15,7 @@ class WSStatusMessage(BaseModel):
     status: Literal["starting", "running", "stopped", "exited", "error"]
     exit_code: Optional[int] = None
     runtime_seconds: float = 0.0
+    run_id: Optional[str] = None
 
 class WSCompileMessage(BaseModel):
     type: Literal["compile_result"] = "compile_result"
@@ -23,7 +25,7 @@ class WSCompileMessage(BaseModel):
     duration_ms: float = 0.0
 
 class WSClientMessage(BaseModel):
-    action: Literal["stdin", "stop_process", "ping"]
+    action: Literal["stdin", "stop_process", "delete_process", "ping"]
     process_id: Optional[str] = None
     data: Optional[str] = None
 

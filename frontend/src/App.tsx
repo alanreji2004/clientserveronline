@@ -7,6 +7,7 @@ import { StatusBar } from './components/StatusBar/StatusBar';
 import { NewProjectModal } from './components/Modal/NewProjectModal';
 import { api } from './services/api';
 import { ExecutionWebSocket } from './services/websocket';
+import { FolderOpen, Code, Terminal as TerminalIcon } from 'lucide-react';
 import type {
   Project,
   ProjectTemplateInfo,
@@ -37,8 +38,13 @@ export const App: React.FC = () => {
   const [outputs, setOutputs] = useState<Record<string, OutputEvent[]>>({});
   const [compileResult, setCompileResult] = useState<CompileResult | null>(null);
   const [isCompiling, setIsCompiling] = useState(false);
+  const [isStartingProject, setIsStartingProject] = useState(false);
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+
+  // Responsive Layout & Mobile Mode: 'files' | 'editor' | 'terminal'
+  const [mobileView, setMobileView] = useState<'files' | 'editor' | 'terminal'>('editor');
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 768);
 
   // Terminal Layout State
   const [isTerminalOpen, setIsTerminalOpen] = useState(true);
@@ -48,6 +54,17 @@ export const App: React.FC = () => {
 
   const wsRef = useRef<ExecutionWebSocket | null>(null);
   const isDraggingTerminalRef = useRef(false);
+  const currentRunIdRef = useRef<string>('');
+  const isStartingProjectRef = useRef<boolean>(false);
+
+  // Window resize listener to track mobile breakpoint
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth <= 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Sync theme attribute
   useEffect(() => {
@@ -99,8 +116,12 @@ export const App: React.FC = () => {
     if (initialFile) {
       setOpenTabs([initialFile.path]);
       setActiveFile(initialFile.path);
-      const content = await api.getFile(proj.id, initialFile.path);
-      setFileContents({ [initialFile.path]: content.content });
+      try {
+        const content = await api.getFile(proj.id, initialFile.path);
+        setFileContents({ [initialFile.path]: content.content });
+      } catch (e) {
+        console.error('Failed to load initial file:', e);
+      }
     }
 
     // Initialize Execution Session
@@ -120,11 +141,18 @@ export const App: React.FC = () => {
           setIsConnected(true);
         } else if (msg.type === 'output') {
           const event = msg as OutputEvent;
+          // Stale event filtering: ignore events from superseded runs
+          if (event.run_id && currentRunIdRef.current && event.run_id !== currentRunIdRef.current) {
+            return;
+          }
           setOutputs((prev) => ({
             ...prev,
             [event.process_id]: [...(prev[event.process_id] || []), event],
           }));
         } else if (msg.type === 'status_change') {
+          if (msg.run_id && currentRunIdRef.current && msg.run_id !== currentRunIdRef.current) {
+            return;
+          }
           setProcesses((prev) =>
             prev.map((p) =>
               p.process_id === msg.process_id
@@ -132,17 +160,27 @@ export const App: React.FC = () => {
                 : p
             )
           );
+        } else if (msg.type === 'process_deleted') {
+          const pid = msg.process_id;
+          setProcesses((prev) => prev.filter((p) => p.process_id !== pid));
+          setOutputs((prev) => {
+            const next = { ...prev };
+            delete next[pid];
+            return next;
+          });
+          setActiveTerminalTab((curr) => (curr === pid ? 'overview' : curr));
         } else if (msg.type === 'compile_result') {
           setCompileResult(msg as CompileResult);
         }
       });
 
       ws.connect();
-    } catch (e) {
-      console.error('Failed to initialize session:', e);
+    } catch (err) {
+      console.error('Failed to initialize session:', err);
     }
   };
 
+  // Re-establish session if expired or not set
   const ensureActiveSession = async (): Promise<Session | null> => {
     if (!project) return null;
     if (session) {
@@ -166,11 +204,17 @@ export const App: React.FC = () => {
           setIsConnected(true);
         } else if (msg.type === 'output') {
           const event = msg as OutputEvent;
+          if (event.run_id && currentRunIdRef.current && event.run_id !== currentRunIdRef.current) {
+            return;
+          }
           setOutputs((prev) => ({
             ...prev,
             [event.process_id]: [...(prev[event.process_id] || []), event],
           }));
         } else if (msg.type === 'status_change') {
+          if (msg.run_id && currentRunIdRef.current && msg.run_id !== currentRunIdRef.current) {
+            return;
+          }
           setProcesses((prev) =>
             prev.map((p) =>
               p.process_id === msg.process_id
@@ -178,6 +222,15 @@ export const App: React.FC = () => {
                 : p
             )
           );
+        } else if (msg.type === 'process_deleted') {
+          const pid = msg.process_id;
+          setProcesses((prev) => prev.filter((p) => p.process_id !== pid));
+          setOutputs((prev) => {
+            const next = { ...prev };
+            delete next[pid];
+            return next;
+          });
+          setActiveTerminalTab((curr) => (curr === pid ? 'overview' : curr));
         } else if (msg.type === 'compile_result') {
           setCompileResult(msg as CompileResult);
         }
@@ -216,6 +269,11 @@ export const App: React.FC = () => {
       } catch (e) {
         console.error('Failed to load file content:', e);
       }
+    }
+
+    // On mobile, selecting a file automatically opens the editor view
+    if (isMobile) {
+      setMobileView('editor');
     }
   };
 
@@ -284,6 +342,9 @@ export const App: React.FC = () => {
     setIsCompiling(true);
     setIsTerminalOpen(true);
     setActiveTerminalTab('compiler');
+    if (isMobile) {
+      setMobileView('terminal');
+    }
 
     // Save any unsaved dirty files first
     for (const dirtyPath of Array.from(dirtyFiles)) {
@@ -291,7 +352,6 @@ export const App: React.FC = () => {
     }
 
     try {
-      // Find source file to compile
       let sourceFile = 'server.c';
       if (activeFile && (activeFile.endsWith('.c') || activeFile.endsWith('.h'))) {
         sourceFile = activeFile.endsWith('.h') ? 'server.c' : activeFile;
@@ -312,6 +372,8 @@ export const App: React.FC = () => {
   // Run Single File Action
   const handleRunCurrentFile = async () => {
     if (!project || !activeFile) return;
+    if (isStartingProjectRef.current) return; // Prevent race conditions
+
     const currentSession = await ensureActiveSession();
     if (!currentSession) return;
 
@@ -321,6 +383,12 @@ export const App: React.FC = () => {
     }
 
     setIsTerminalOpen(true);
+    if (isMobile) {
+      setMobileView('terminal');
+    }
+
+    const runId = Math.random().toString(36).substring(2, 10);
+    currentRunIdRef.current = runId;
 
     try {
       if (activeFile.endsWith('.py')) {
@@ -328,19 +396,22 @@ export const App: React.FC = () => {
           currentSession.session_id,
           activeFile,
           'python',
-          activeFile
+          activeFile,
+          [],
+          runId
         );
         setProcesses((prev) => [...prev.filter((p) => p.process_id !== proc.process_id), proc]);
         setActiveTerminalTab(proc.process_id);
       } else if (activeFile.endsWith('.c')) {
-        // Compile first, then run binary
         const compileRes = await handleCompile();
         if (compileRes && compileRes.success && compileRes.output_binary) {
           const proc = await api.launchProcess(
             currentSession.session_id,
             activeFile.replace(/\.c$/, ''),
             'binary',
-            compileRes.output_binary
+            compileRes.output_binary,
+            [],
+            runId
           );
           setProcesses((prev) => [...prev.filter((p) => p.process_id !== proc.process_id), proc]);
           setActiveTerminalTab(proc.process_id);
@@ -351,43 +422,71 @@ export const App: React.FC = () => {
     }
   };
 
-  // Simultaneous Execution Action: Run Server & Client concurrently!
+  // Centralized Execution Lifecycle: Run Project
+  // Stops all previously running projects and files, cleans ports, and launches fresh.
   const handleRunBothServerAndClient = async () => {
     if (!project) return;
-    const currentSession = await ensureActiveSession();
-    if (!currentSession) return;
+    if (isStartingProjectRef.current) return; // Prevent concurrent Run clicks
 
-    // Save all dirty files
-    for (const dirtyPath of Array.from(dirtyFiles)) {
-      await handleSaveFile(dirtyPath);
-    }
-
-    setIsTerminalOpen(true);
-
-    const isCProject = project.files.some((f) => f.name === 'server.c' && !f.is_directory);
-    const isPythonProject = project.files.some((f) => f.name === 'server.py' && !f.is_directory);
+    isStartingProjectRef.current = true;
+    setIsStartingProject(true);
 
     try {
+      // 1. Centralized execution lifecycle manager: Stop all previously running programs across sessions
+      await api.stopAllActiveExecution();
+
+      const currentSession = await ensureActiveSession();
+      if (!currentSession) return;
+
+      // 2. Generate unique Run ID to prevent race conditions and ignore stale output
+      const runId = Math.random().toString(36).substring(2, 10);
+      currentRunIdRef.current = runId;
+
+      // 3. Clear old processes and outputs from UI for the fresh run
+      setProcesses([]);
+      setOutputs({});
+
+      // 4. Save all dirty files & sync workspace
+      for (const dirtyPath of Array.from(dirtyFiles)) {
+        await handleSaveFile(dirtyPath);
+      }
+      await api.syncSession(currentSession.session_id);
+
+      setIsTerminalOpen(true);
+      if (isMobile) {
+        setMobileView('terminal');
+      }
+
+      const isCProject = project.files.some((f) => f.name === 'server.c' && !f.is_directory);
+      const isPythonProject = project.files.some((f) => f.name === 'server.py' && !f.is_directory);
+
       if (isPythonProject) {
-        // 1. Launch Python Server
+        // 5a. Launch Python Server
         const serverProc = await api.launchProcess(
           currentSession.session_id,
           'Python Server',
           'python',
-          'server.py'
+          'server.py',
+          [],
+          runId
         );
-        setProcesses((prev) => [...prev.filter((p) => p.process_id !== serverProc.process_id), serverProc]);
+        setProcesses([serverProc]);
         setActiveTerminalTab(serverProc.process_id);
 
         // Small delay to allow server socket to bind before client connects
         setTimeout(async () => {
           try {
-            // 2. Launch Python Client concurrently
+            // Verify run hasn't been superseded
+            if (currentRunIdRef.current !== runId) return;
+
+            // 5b. Launch Python Client concurrently inside the same session (does NOT stop server!)
             const clientProc = await api.launchProcess(
               currentSession.session_id,
               'Python Client',
               'python',
-              'client.py'
+              'client.py',
+              [],
+              runId
             );
             setProcesses((prev) => [...prev.filter((p) => p.process_id !== clientProc.process_id), clientProc]);
           } catch (err: any) {
@@ -396,7 +495,7 @@ export const App: React.FC = () => {
         }, 800);
 
       } else if (isCProject) {
-        // 1. Compile server.c
+        // 6a. Compile server.c
         setActiveTerminalTab('compiler');
         const srvCompile = await api.compile(currentSession.session_id, ['server.c'], 'c_server');
         if (!srvCompile.success) {
@@ -404,44 +503,61 @@ export const App: React.FC = () => {
           return;
         }
 
-        // 2. Compile client.c
+        // 6b. Compile client.c
         const cliCompile = await api.compile(currentSession.session_id, ['client.c'], 'c_client');
         if (!cliCompile.success) {
           alert('Failed to compile client.c. See GCC compiler tab.');
           return;
         }
 
-        // 3. Launch Server Binary
+        // Verify run hasn't been superseded
+        if (currentRunIdRef.current !== runId) return;
+
+        // 6c. Launch Server Binary
         const serverProc = await api.launchProcess(
           currentSession.session_id,
           'C Server',
           'binary',
-          srvCompile.output_binary!
+          srvCompile.output_binary!,
+          [],
+          runId
         );
-        setProcesses((prev) => [...prev.filter((p) => p.process_id !== serverProc.process_id), serverProc]);
+        setProcesses([serverProc]);
         setActiveTerminalTab(serverProc.process_id);
 
-        // 4. Launch Client Binary concurrently
+        // 6d. Launch Client Binary concurrently inside same session
         setTimeout(async () => {
           try {
+            if (currentRunIdRef.current !== runId) return;
             const clientProc = await api.launchProcess(
               currentSession.session_id,
               'C Client',
               'binary',
-              cliCompile.output_binary!
+              cliCompile.output_binary!,
+              [],
+              runId
             );
             setProcesses((prev) => [...prev.filter((p) => p.process_id !== clientProc.process_id), clientProc]);
           } catch (err: any) {
             console.error('Failed to launch C client:', err);
           }
         }, 800);
+      } else {
+        // Fallback for general projects: run active file or main file
+        const mainFile = project.files.find((f) => f.name.includes('main') || f.name.endsWith('.py') || f.name.endsWith('.c'));
+        if (mainFile) {
+          await handleRunCurrentFile();
+        }
       }
     } catch (e: any) {
       alert(`Launch error: ${e.message}`);
+    } finally {
+      isStartingProjectRef.current = false;
+      setIsStartingProject(false);
     }
   };
 
-  // Process Controls
+  // Process Controls: Stop Process
   const handleStopProcess = async (processId: string) => {
     if (!session) return;
     try {
@@ -454,6 +570,29 @@ export const App: React.FC = () => {
     }
   };
 
+  // Terminal Controls: Delete / Close Terminal
+  const handleDeleteProcess = async (processId: string) => {
+    if (!session) return;
+    try {
+      await api.deleteProcess(session.session_id, processId);
+      setProcesses((prev) => prev.filter((p) => p.process_id !== processId));
+      setOutputs((prev) => {
+        const next = { ...prev };
+        delete next[processId];
+        return next;
+      });
+      setActiveTerminalTab((curr) => {
+        if (curr === processId) {
+          const remaining = processes.filter((p) => p.process_id !== processId);
+          return remaining.length > 0 ? remaining[0].process_id : 'overview';
+        }
+        return curr;
+      });
+    } catch (e) {
+      console.error('Failed to delete terminal:', e);
+    }
+  };
+
   const handleRestartProcess = async (proc: ProcessInfo) => {
     if (!session) return;
     try {
@@ -463,7 +602,9 @@ export const App: React.FC = () => {
         session.session_id,
         proc.name,
         isPython ? 'python' : 'binary',
-        entry
+        entry,
+        [],
+        currentRunIdRef.current
       );
       setProcesses((prev) => [...prev.filter((p) => p.process_id !== newProc.process_id), newProc]);
       setActiveTerminalTab(newProc.process_id);
@@ -472,11 +613,14 @@ export const App: React.FC = () => {
     }
   };
 
+  // Stop All Processes in Current Session
   const handleStopAll = async () => {
     if (!session) return;
-    const running = processes.filter((p) => p.status === 'running');
-    for (const p of running) {
-      await handleStopProcess(p.process_id);
+    try {
+      await api.stopAllSessionProcesses(session.session_id);
+      setProcesses((prev) => prev.map((p) => ({ ...p, status: 'stopped' })));
+    } catch (e) {
+      console.error('Failed to stop all processes:', e);
     }
   };
 
@@ -493,7 +637,7 @@ export const App: React.FC = () => {
     setOutputs((prev) => ({ ...prev, [processId]: [] }));
   };
 
-  // Terminal Resize Dragging
+  // Terminal Resize Dragging (Desktop)
   const handleMouseDownResize = () => {
     isDraggingTerminalRef.current = true;
     const handleMouseMove = (e: MouseEvent) => {
@@ -516,80 +660,210 @@ export const App: React.FC = () => {
   const runningProcessesCount = processes.filter((p) => p.status === 'running').length;
 
   return (
-    <div style={{ height: '100vh', width: '100vw', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div style={{ height: '100vh', width: '100vw', maxWidth: '100vw', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* Top Header */}
       <Header
         project={project}
         templates={templates}
         activeFile={activeFile}
         isRunningAny={runningProcessesCount > 0}
-        isCompiling={isCompiling}
+        isCompiling={isCompiling || isStartingProject}
         theme={theme}
         systemHealth={systemHealth}
         onRunCurrentFile={handleRunCurrentFile}
         onCompileCurrentFile={handleCompile}
         onRunBothServerAndClient={handleRunBothServerAndClient}
         onStopAll={handleStopAll}
-        onToggleTerminal={() => setIsTerminalOpen(!isTerminalOpen)}
+        onToggleTerminal={() => {
+          if (isMobile) {
+            setMobileView(mobileView === 'terminal' ? 'editor' : 'terminal');
+          } else {
+            setIsTerminalOpen(!isTerminalOpen);
+          }
+        }}
         onToggleTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
         onSelectTemplate={handleSelectTemplate}
         onNewProjectModal={() => setIsNewProjectModalOpen(true)}
       />
 
-      {/* Center IDE Area: Sidebar + Monaco Editor */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        <FileExplorer
-          files={project?.files || []}
-          activeFile={activeFile}
-          dirtyFiles={dirtyFiles}
-          onSelectFile={handleSelectFile}
-          onCreateFile={handleCreateFile}
-          onDeleteFile={handleDeleteFile}
-        />
-
-        <CodeEditor
-          openTabs={openTabs}
-          activeFile={activeFile}
-          fileContents={fileContents}
-          dirtyFiles={dirtyFiles}
-          diagnostics={compileResult?.diagnostics || []}
-          theme={theme}
-          onSelectTab={(path) => setActiveFile(path)}
-          onCloseTab={handleCloseTab}
-          onChangeContent={handleChangeContent}
-          onSave={handleSaveFile}
-        />
-      </div>
-
-      {/* Resizable Terminal Handle */}
-      {isTerminalOpen && (
-        <div
-          onMouseDown={handleMouseDownResize}
-          style={{
-            height: '4px',
-            backgroundColor: 'var(--border-color)',
-            cursor: 'row-resize',
-            transition: 'background-color 0.2s',
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--accent-color)')}
-          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'var(--border-color)')}
-        />
+      {/* Mobile Mode Switcher Bar (Visible on mobile <= 768px) */}
+      {isMobile && (
+        <div style={{
+          height: '38px',
+          backgroundColor: 'var(--bg-secondary)',
+          borderBottom: '1px solid var(--border-color)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-around',
+          padding: '0 4px',
+          flexShrink: 0
+        }}>
+          <button
+            onClick={() => setMobileView('files')}
+            style={{
+              flex: 1,
+              height: '30px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              borderRadius: '4px',
+              backgroundColor: mobileView === 'files' ? 'var(--bg-primary)' : 'transparent',
+              color: mobileView === 'files' ? 'var(--accent-color)' : 'var(--text-secondary)',
+              fontWeight: mobileView === 'files' ? 600 : 400,
+              fontSize: '12px'
+            }}
+          >
+            <FolderOpen size={13} /> Files ({project?.files.length || 0})
+          </button>
+          <button
+            onClick={() => setMobileView('editor')}
+            style={{
+              flex: 1,
+              height: '30px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              borderRadius: '4px',
+              backgroundColor: mobileView === 'editor' ? 'var(--bg-primary)' : 'transparent',
+              color: mobileView === 'editor' ? 'var(--accent-color)' : 'var(--text-secondary)',
+              fontWeight: mobileView === 'editor' ? 600 : 400,
+              fontSize: '12px'
+            }}
+          >
+            <Code size={13} /> Editor
+          </button>
+          <button
+            onClick={() => setMobileView('terminal')}
+            style={{
+              flex: 1,
+              height: '30px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              borderRadius: '4px',
+              backgroundColor: mobileView === 'terminal' ? 'var(--bg-primary)' : 'transparent',
+              color: mobileView === 'terminal' ? 'var(--accent-color)' : 'var(--text-secondary)',
+              fontWeight: mobileView === 'terminal' ? 600 : 400,
+              fontSize: '12px'
+            }}
+          >
+            <TerminalIcon size={13} /> Terminal ({processes.length})
+          </button>
+        </div>
       )}
 
-      {/* Multi-Process Terminal Panel */}
-      {isTerminalOpen && (
-        <div style={{ height: `${terminalHeight}px`, minHeight: '120px' }}>
-          <MultiProcessTerminal
-            processes={processes}
-            outputs={outputs}
-            compileResult={compileResult}
-            activeTab={activeTerminalTab}
-            onSelectTab={setActiveTerminalTab}
-            onStopProcess={handleStopProcess}
-            onRestartProcess={handleRestartProcess}
-            onSendStdin={handleSendStdin}
-            onClearOutput={handleClearOutput}
-          />
+      {/* Main Workspace Area */}
+      {isMobile ? (
+        // Mobile View: Displays selected pane full width/height
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+          {mobileView === 'files' && (
+            <FileExplorer
+              files={project?.files || []}
+              activeFile={activeFile}
+              dirtyFiles={dirtyFiles}
+              onSelectFile={handleSelectFile}
+              onCreateFile={handleCreateFile}
+              onDeleteFile={handleDeleteFile}
+            />
+          )}
+
+          {mobileView === 'editor' && (
+            <CodeEditor
+              openTabs={openTabs}
+              activeFile={activeFile}
+              fileContents={fileContents}
+              dirtyFiles={dirtyFiles}
+              diagnostics={compileResult?.diagnostics || []}
+              theme={theme}
+              onSelectTab={(path) => setActiveFile(path)}
+              onCloseTab={handleCloseTab}
+              onChangeContent={handleChangeContent}
+              onSave={handleSaveFile}
+            />
+          )}
+
+          {mobileView === 'terminal' && (
+            <MultiProcessTerminal
+              processes={processes}
+              outputs={outputs}
+              compileResult={compileResult}
+              activeTab={activeTerminalTab}
+              onSelectTab={setActiveTerminalTab}
+              onStopProcess={handleStopProcess}
+              onDeleteProcess={handleDeleteProcess}
+              onRestartProcess={handleRestartProcess}
+              onSendStdin={handleSendStdin}
+              onClearOutput={handleClearOutput}
+              onRunCurrentFile={handleRunCurrentFile}
+              onRunBothServerAndClient={handleRunBothServerAndClient}
+            />
+          )}
+        </div>
+      ) : (
+        // Desktop / Tablet Layout: Sidebar + Editor, Resizable Terminal below
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+            <FileExplorer
+              files={project?.files || []}
+              activeFile={activeFile}
+              dirtyFiles={dirtyFiles}
+              onSelectFile={handleSelectFile}
+              onCreateFile={handleCreateFile}
+              onDeleteFile={handleDeleteFile}
+            />
+
+            <CodeEditor
+              openTabs={openTabs}
+              activeFile={activeFile}
+              fileContents={fileContents}
+              dirtyFiles={dirtyFiles}
+              diagnostics={compileResult?.diagnostics || []}
+              theme={theme}
+              onSelectTab={(path) => setActiveFile(path)}
+              onCloseTab={handleCloseTab}
+              onChangeContent={handleChangeContent}
+              onSave={handleSaveFile}
+            />
+          </div>
+
+          {/* Resizable Terminal Handle */}
+          {isTerminalOpen && (
+            <div
+              onMouseDown={handleMouseDownResize}
+              style={{
+                height: '4px',
+                backgroundColor: 'var(--border-color)',
+                cursor: 'row-resize',
+                transition: 'background-color 0.2s',
+                flexShrink: 0
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--accent-color)')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'var(--border-color)')}
+            />
+          )}
+
+          {/* Multi-Process Terminal Panel */}
+          {isTerminalOpen && (
+            <div style={{ height: `${terminalHeight}px`, minHeight: '120px', flexShrink: 0 }}>
+              <MultiProcessTerminal
+                processes={processes}
+                outputs={outputs}
+                compileResult={compileResult}
+                activeTab={activeTerminalTab}
+                onSelectTab={setActiveTerminalTab}
+                onStopProcess={handleStopProcess}
+                onDeleteProcess={handleDeleteProcess}
+                onRestartProcess={handleRestartProcess}
+                onSendStdin={handleSendStdin}
+                onClearOutput={handleClearOutput}
+                onRunCurrentFile={handleRunCurrentFile}
+                onRunBothServerAndClient={handleRunBothServerAndClient}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -621,4 +895,3 @@ export const App: React.FC = () => {
 };
 
 export default App;
-

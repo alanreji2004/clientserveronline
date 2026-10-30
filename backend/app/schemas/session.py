@@ -28,6 +28,7 @@ class ProcessLaunchRequest(BaseModel):
     entry_point: str = Field(..., description="Target script or binary path, e.g. 'server.py' or 'server'")
     args: Optional[List[str]] = Field(default_factory=list)
     env_vars: Optional[Dict[str, str]] = Field(default_factory=dict)
+    run_id: Optional[str] = Field(default=None, description="Optional unique ID identifying this execution run")
 
 class ProcessInfo(BaseModel):
     process_id: str
@@ -41,6 +42,7 @@ class ProcessInfo(BaseModel):
     ended_at: Optional[datetime] = None
     runtime_seconds: float = 0.0
     output_line_count: int = 0
+    run_id: Optional[str] = None
 
 class ProcessStdinRequest(BaseModel):
     input_text: str

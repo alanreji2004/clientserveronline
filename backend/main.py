@@ -38,6 +38,15 @@ def root():
 
 if __name__ == "__main__":
     import uvicorn
-    # reload is set to False so writing files in data/workspaces does not restart the backend
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
+    # reload MUST stay False — the data/ directory is written by the IDE at runtime.
+    # If uvicorn's StatReload watches data/projects/ it will restart on every file save,
+    # killing all in-memory sessions. Use `python main.py` to start, never `uvicorn --reload`.
+    uvicorn.run(
+        "main:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=False,
+        # Safety net: if reload is accidentally re-enabled, exclude data dirs from the watcher.
+        reload_excludes=["data/*", "data/projects/*", "data/workspaces/*", "*.pyc", "__pycache__"],
+    )
 

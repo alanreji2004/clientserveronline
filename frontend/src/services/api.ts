@@ -145,7 +145,8 @@ export const api = {
     name: string,
     commandType: 'python' | 'binary' | 'custom',
     entryPoint: string,
-    args: string[] = []
+    args: string[] = [],
+    runId?: string
   ): Promise<ProcessInfo> {
     const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/processes`, {
       method: 'POST',
@@ -155,6 +156,7 @@ export const api = {
         command_type: commandType,
         entry_point: entryPoint,
         args,
+        run_id: runId,
       }),
     });
     return handleResponse<ProcessInfo>(res);
@@ -184,6 +186,27 @@ export const api = {
       method: 'POST',
     });
     return handleResponse<ProcessInfo>(res);
+  },
+
+  async deleteProcess(sessionId: string, processId: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/processes/${encodeURIComponent(processId)}`, {
+      method: 'DELETE',
+    });
+    return handleResponse(res);
+  },
+
+  async stopAllSessionProcesses(sessionId: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/stop_all_processes`, {
+      method: 'POST',
+    });
+    return handleResponse(res);
+  },
+
+  async stopAllActiveExecution(): Promise<{ message: string; stopped_count: number }> {
+    const res = await fetch(`${API_BASE}/sessions/lifecycle/stop_all`, {
+      method: 'POST',
+    });
+    return handleResponse<{ message: string; stopped_count: number }>(res);
   },
 
   async stopSession(sessionId: string): Promise<void> {

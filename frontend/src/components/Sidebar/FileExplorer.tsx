@@ -57,16 +57,18 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   };
 
   return (
-    <div style={{
-      width: '230px',
-      minWidth: '230px',
-      height: '100%',
-      backgroundColor: 'var(--bg-secondary)',
-      borderRight: '1px solid var(--border-color)',
-      display: 'flex',
-      flexDirection: 'column',
-      userSelect: 'none'
-    }}>
+    <div
+      className="file-explorer-sidebar"
+      style={{
+        height: '100%',
+        backgroundColor: 'var(--bg-secondary)',
+        borderRight: '1px solid var(--border-color)',
+        display: 'flex',
+        flexDirection: 'column',
+        userSelect: 'none',
+        minWidth: 0
+      }}
+    >
       {/* Explorer Header */}
       <div style={{
         padding: '10px 12px',

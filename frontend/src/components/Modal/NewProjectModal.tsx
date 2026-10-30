@@ -42,11 +42,12 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({
     }}>
       <div style={{
         backgroundColor: 'var(--bg-primary)',
-        width: '460px',
+        width: 'min(460px, calc(100vw - 24px))',
+        maxHeight: 'calc(100vh - 24px)',
         borderRadius: '8px',
         boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
         border: '1px solid var(--border-color)',
-        overflow: 'hidden'
+        overflowY: 'auto'
       }}>
         <div style={{
           padding: '14px 18px',

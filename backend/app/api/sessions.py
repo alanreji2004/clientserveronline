@@ -72,6 +72,31 @@ async def send_stdin(session_id: str, process_id: str, req: ProcessStdinRequest)
 async def stop_process(session_id: str, process_id: str):
     return await supervisor.stop_process(session_id, process_id)
 
+@router.post("/lifecycle/stop_all")
+async def stop_all_active_execution():
+    """
+    Centralized execution lifecycle manager:
+    Stops all running processes across all active execution sessions and releases ports.
+    """
+    stopped_count = await supervisor.stop_all_active_execution()
+    return {"message": "All active execution processes stopped.", "stopped_count": stopped_count}
+
+@router.delete("/{session_id}/processes/{process_id}")
+async def delete_process(session_id: str, process_id: str):
+    """
+    Stops the process if running, cleans up child processes, and deletes the terminal.
+    """
+    await supervisor.delete_process(session_id, process_id)
+    return {"message": f"Process {process_id} deleted."}
+
+@router.post("/{session_id}/stop_all_processes")
+async def stop_all_session_processes(session_id: str):
+    """
+    Stops all running processes inside this specific session.
+    """
+    await supervisor.stop_all_session_processes(session_id)
+    return {"message": "All session processes stopped."}
+
 @router.post("/{session_id}/stop")
 async def stop_session(session_id: str):
     await session_service.stop_session(session_id)

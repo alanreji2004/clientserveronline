@@ -61,6 +61,7 @@ export interface ProcessInfo {
   ended_at?: string | null;
   runtime_seconds: number;
   output_line_count: number;
+  run_id?: string;
 }
 
 export interface OutputEvent {
@@ -70,6 +71,7 @@ export interface OutputEvent {
   stream: 'stdout' | 'stderr' | 'system' | 'stdin';
   data: string;
   timestamp: string;
+  run_id?: string;
 }
 
 export interface StatusChangeEvent {
@@ -80,6 +82,14 @@ export interface StatusChangeEvent {
   status: ProcessStatus;
   exit_code?: number | null;
   runtime_seconds: number;
+  run_id?: string;
+}
+
+export interface ProcessDeletedEvent {
+  type: 'process_deleted';
+  process_id: string;
+  session_id: string;
+  timestamp?: string;
 }
 
 export interface Session {

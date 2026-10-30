@@ -1,0 +1,1 @@
+msg = input("enter msg")

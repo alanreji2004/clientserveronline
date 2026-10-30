@@ -99,7 +99,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   };
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       {/* Tabs Header */}
       <div style={{
         height: '35px',
@@ -108,6 +108,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         display: 'flex',
         alignItems: 'center',
         overflowX: 'auto',
+        WebkitOverflowScrolling: 'touch',
+        minWidth: 0
       }}>
         {openTabs.map((tabPath) => {
           const isActive = tabPath === activeFile;
